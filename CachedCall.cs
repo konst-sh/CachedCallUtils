@@ -41,11 +41,15 @@ public static class CachedCall
     #region Public Execution API
 
     /// <summary>
-    /// Executes an async method and returns the result. Throws if deserialization fails.
+    /// Executes an async method and returns the result. 
+    /// Set forceRefresh to true to bypass the cache and fetch fresh data.
     /// </summary>
-    public static async Task<T> ExecuteAsync<T>(Expression<Func<Task<T>>> expr, string tag = "api_exploration")
+    public static async Task<T> ExecuteAsync<T>(
+        Expression<Func<Task<T>>> expr,
+        string tag = "default",
+        bool forceRefresh = false)
     {
-        var result = await ExecuteSafeAsync(expr, tag);
+        var result = await ExecuteSafeAsync(expr, tag, forceRefresh);
         if (!result.IsSuccess) throw result.Error!;
         return result.Value;
     }
@@ -54,7 +58,7 @@ public static class CachedCall
     /// Executes an async method with a Time-To-Live (TTL). 
     /// If the cached entry is older than maxAge, it re-fetches from the API.
     /// </summary>
-    public static async Task<T> ExecuteWithExpiryAsync<T>(Expression<Func<Task<T>>> expr, TimeSpan maxAge, string tag = "api_exploration")
+    public static async Task<T> ExecuteWithExpiryAsync<T>(Expression<Func<Task<T>>> expr, TimeSpan maxAge, string tag = "default")
     {
         var meta = await GetMetadataAsync(expr);
         if (meta != null && (DateTime.UtcNow - meta.CreatedAt) > maxAge)
@@ -65,32 +69,41 @@ public static class CachedCall
     }
 
     /// <summary>
-    /// Executes an async method and returns a wrapper containing the result or deserialization errors.
-    /// Saves raw JSON to DB even if mapping to the C# class fails.
+    /// Executes an async method and returns a wrapper.
+    /// Set forceRefresh to true to bypass the cache and fetch fresh data.
     /// </summary>
-    public static async Task<CacheResult<T>> ExecuteSafeAsync<T>(Expression<Func<Task<T>>> expr, string tag = "api_exploration")
+    public static async Task<CacheResult<T>> ExecuteSafeAsync<T>(
+        Expression<Func<Task<T>>> expr,
+        string tag = "default",
+        bool forceRefresh = false)
     {
+        EnsureDatabaseReady();
         var info = GetCallInfo(expr);
-        string? json = await GetRawJsonInternal(info.Hash);
 
-        if (json != null)
+        // 1. Skip lookup if forceRefresh is true
+        if (!forceRefresh)
         {
-            return TryDeserialize<T>(json);
+            string? json = await GetRawJsonInternal(info.Hash);
+            if (json != null) return TryDeserialize<T>(json);
         }
 
+        // 2. Fetch fresh data
         T result;
+        string serializedJson;
         try
         {
             result = await expr.Compile()();
-            json = JsonSerializer.Serialize(result);
+            serializedJson = JsonSerializer.Serialize(result);
         }
         catch (Exception ex)
         {
             return new CacheResult<T>(default!, null!, ex);
         }
 
-        await SaveToDbInternal(info, json, tag);
-        return new CacheResult<T>(result, json);
+        // 3. Save/Overwrite in DB
+        await SaveToDbInternal(info, serializedJson, tag);
+
+        return new CacheResult<T>(result, serializedJson);
     }
 
     #endregion
