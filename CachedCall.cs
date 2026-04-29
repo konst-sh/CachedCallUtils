@@ -34,7 +34,7 @@ public static class CachedCall
 
     public record CacheMeta(string MethodName, string Tag, DateTime CreatedAt, int SizeBytes);
 
-    private record CallMetadata(string Hash, string MethodName);
+    public record CallMetadata(string Hash, string MethodName);
 
     #endregion
 
@@ -277,23 +277,44 @@ public static class CachedCall
         dbReady = true;
     }
 
-    private static CallMetadata GetCallInfo<T>(Expression<Func<T>> expr)
+    public static CallMetadata GetCallInfo<T>(Expression<Func<T>> expr)
     {
         if (expr.Body is not MethodCallExpression mce)
             throw new ArgumentException("Expression must be a method call.");
 
+        var declaringType = mce.Method.DeclaringType;
+
+        // The Namespace Check: 
+        // Top-level notebook methods have no namespace and get wrapped in Submission#X.
+        // Library methods (DLLs/Packages) have namespaces we can trust.
+        string typeName = declaringType is null || string.IsNullOrEmpty(declaringType.Namespace)
+            ? "Notebook"
+            : declaringType.Name;
+
         string methodName = mce.Method.Name;
+
+        // The "Human Readable" name for the DB column
+        string displayName = $"{typeName}.{methodName}";
+
+        // 1. Parameter Types (for signature uniqueness)
+        string paramTypes = string.Join(",", mce.Method.GetParameters()
+            .Select(p => p.ParameterType.Name));
+
+        // 2. Argument Values (for call uniqueness)
         var argValues = mce.Arguments.Select(arg =>
             Expression.Lambda(arg).Compile().DynamicInvoke()
         ).ToArray();
 
         string serializedArgs = JsonSerializer.Serialize(argValues);
-        string rawKey = $"{methodName}_{serializedArgs}";
 
-        byte[] hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(rawKey));
-        string hash = BitConverter.ToString(hashBytes).Replace("-", "").ToLower();
+        // 3. The "Strict" Internal Key for hashing
+        string rawKey = $"{displayName}({paramTypes})_{serializedArgs}";
 
-        return new CallMetadata(hash, methodName);
+        string hash = BitConverter.ToString(SHA256.HashData(Encoding.UTF8.GetBytes(rawKey)))
+            .Replace("-", "").ToLower();
+
+        // Pass the displayName (Class.Method) into the metadata
+        return new CallMetadata(hash, displayName);
     }
 
     private static async Task<string?> GetRawJsonInternal(string hash)
