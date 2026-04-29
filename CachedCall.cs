@@ -20,7 +20,7 @@ public static class CachedCall
     public static bool CollocateCacheFile { get; set; } = true;
 
     public static string DbPath => CollocateCacheFile
-        ? Path.Combine(Directory.GetCurrentDirectory(), "api_cache.db")
+        ? Path.Combine(Directory.GetCurrentDirectory(), "call_cache.db")
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                        "InteractiveNotebooks", "call_cache.db");
 
